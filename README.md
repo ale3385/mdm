@@ -1,7 +1,5 @@
 # mdm
 
-Por supuesto. Aquí hay algunas sugerencias para mejorar el script:
-
 
 
 ```bash
