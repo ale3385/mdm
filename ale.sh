@@ -4,7 +4,7 @@
 readonly DEFAULT_SYSTEM_VOLUME="Macintosh HD"
 readonly DEFAULT_DATA_VOLUME="Macintosh HD - Data"
 
-# Text formating
+# Text formatting
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 BLUE='\033[1;34m'
@@ -13,155 +13,188 @@ PURPLE='\033[1;35m'
 CYAN='\033[1;36m'
 NC='\033[0m'
 
-# Checks if a volume with the given name exists
-checkVolumeExistence() {
-	local volumeLabel="$*"
-	diskutil info "$volumeLabel" >/dev/null 2>&1
+# Error handling function
+handle_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+    exit 1
 }
 
-# Returns the name of a volume with the given type
-getVolumeName() {
-	local volumeType="$1"
-
-	# Getting the APFS Container Disk Identifier
-	apfsContainer=$(diskutil list internal physical | grep 'Container' | awk -F'Container ' '{print $2}' | awk '{print $1}')
-	# Getting the Volume Information
-	volumeInfo=$(diskutil ap list "$apfsContainer" | grep -A 5 "($volumeType)")
-	# Extracting the Volume Name from the Volume Information
-	volumeNameLine=$(echo "$volumeInfo" | grep 'Name:')
-	# Removing unnecessary characters to get the clean Volume Name
-	volumeName=$(echo "$volumeNameLine" | cut -d':' -f2 | cut -d'(' -f1 | xargs)
-
-	echo "$volumeName"
+# Verify we're running in recovery mode
+check_recovery_mode() {
+    if [ ! -d "/Volumes/Macintosh HD" ] && [ ! -d "/Volumes/Data" ]; then
+        echo -e "${YELLOW}Warning: Make sure you're running this in Recovery Mode${NC}"
+        read -p "Continue anyway? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
 }
 
-# Defines the path to a volume with the given default name and volume type
-defineVolumePath() {
-	local defaultVolume=$1
-	local volumeType=$2
-
-	if checkVolumeExistence "$defaultVolume"; then
-		echo "/Volumes/$defaultVolume"
-	else
-		local volumeName
-		volumeName="$(getVolumeName "$volumeType")"
-		echo "/Volumes/$volumeName"
-	fi
+# Enhanced MDM domain blocking
+block_mdm_domains() {
+    local hostsPath="$1"
+    local domains=(
+        "deviceenrollment.apple.com"
+        "mdmenrollment.apple.com"
+        "iprofiles.apple.com"
+        "albert.apple.com"
+        "gateway.push.apple.com"
+        "metrics.apple.com"
+        "profile.ess.apple.com"
+        "profiles.apple.com"
+        "setup.icloud.com"
+        "sq-device.apple.com"
+        "serverstatus.apple.com"
+        "axm-adm-enroll.apple.com"
+        "over-the-air.ess.apple.com"
+        "push.apple.com"
+        "comm.support.apple.com"
+    )
+    
+    echo -e "${BLUE}Blocking MDM domains...${NC}"
+    for domain in "${domains[@]}"; do
+        echo "0.0.0.0 $domain" >> "$hostsPath" || handle_error "Failed to block $domain"
+    done
+    echo -e "${GREEN}Successfully blocked all MDM domains${NC}"
 }
 
-# Mounts a volume at the given path
-mountVolume() {
-	local volumePath=$1
-
-	if [ ! -d "$volumePath" ]; then
-		diskutil mount "$volumePath"
-	fi
+# Enhanced MDM profile removal
+remove_mdm_profiles() {
+    local systemVolumePath="$1"
+    local dataVolumePath="$2"
+    
+    echo -e "${BLUE}Removing MDM profiles and related files...${NC}"
+    
+    # Configuration Profiles
+    local configProfilesPath="$systemVolumePath/var/db/ConfigurationProfiles"
+    rm -rf "$configProfilesPath/Settings/.cloudConfigHasActivationRecord"
+    rm -rf "$configProfilesPath/Settings/.cloudConfigRecordFound"
+    rm -rf "$configProfilesPath/Store"
+    touch "$configProfilesPath/Settings/.cloudConfigProfileInstalled"
+    touch "$configProfilesPath/Settings/.cloudConfigRecordNotFound"
+    
+    # MDM Client
+    rm -rf "$systemVolumePath/Library/LaunchDaemons/com.apple.mdmclient.daemon.plist"
+    rm -rf "$systemVolumePath/Library/LaunchAgents/com.apple.mdmclient.agent.plist"
+    
+    # JAMF and other MDM solutions
+    rm -rf "$systemVolumePath/Library/Application Support/JAMF"
+    rm -rf "$systemVolumePath/Library/LaunchDaemons/com.jamf"
+    rm -rf "$systemVolumePath/usr/local/jamf"
+    rm -rf "$systemVolumePath/var/db/ConfigurationProfiles"
+    
+    # Additional MDM-related files
+    rm -rf "$dataVolumePath/private/var/db/ConfigurationProfiles"
+    touch "$dataVolumePath/private/var/db/.AppleSetupDone"
+    
+    echo -e "${GREEN}MDM profiles and related files removed${NC}"
 }
 
+# Disable MDM services
+disable_mdm_services() {
+    local systemVolumePath="$1"
+    echo -e "${BLUE}Disabling MDM services...${NC}"
+    
+    # Create script to disable services on next boot
+    cat > "$systemVolumePath/Library/LaunchDaemons/disable.mdm.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>disable.mdm</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>launchctl unload /Library/LaunchDaemons/com.apple.mdmclient.daemon.plist; launchctl unload /Library/LaunchAgents/com.apple.mdmclient.agent.plist</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    
+    chmod 644 "$systemVolumePath/Library/LaunchDaemons/disable.mdm.plist"
+    echo -e "${GREEN}MDM services disabled${NC}"
+}
+
+# Verify bypass success
+verify_bypass() {
+    echo -e "${BLUE}Verifying MDM bypass...${NC}"
+    local success=true
+    
+    # Check for common MDM files
+    for file in "/Library/LaunchDaemons/com.apple.mdmclient.daemon.plist" \
+                "/Library/LaunchAgents/com.apple.mdmclient.agent.plist" \
+                "/var/db/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord"; do
+        if [ -f "$file" ]; then
+            echo -e "${RED}Warning: MDM file still exists: $file${NC}"
+            success=false
+        fi
+    done
+    
+    if [ "$success" = true ]; then
+        echo -e "${GREEN}Verification complete: MDM appears to be successfully bypassed${NC}"
+    else
+        echo -e "${YELLOW}Verification complete: Some MDM files still exist${NC}"
+    fi
+}
+
+# Main bypass function
+perform_bypass() {
+    echo -e "\n${GREEN}Starting Enhanced MDM Bypass...${NC}\n"
+    
+    # Check if we're in recovery mode
+    check_recovery_mode
+    
+    # Mount volumes
+    echo -e "${BLUE}Mounting volumes...${NC}"
+    systemVolumePath=$(defineVolumePath "$DEFAULT_SYSTEM_VOLUME" "System")
+    mountVolume "$systemVolumePath"
+    dataVolumePath=$(defineVolumePath "$DEFAULT_DATA_VOLUME" "Data")
+    mountVolume "$dataVolumePath"
+    echo -e "${GREEN}Volumes mounted successfully${NC}\n"
+    
+    # Perform bypass steps
+    block_mdm_domains "$systemVolumePath/etc/hosts"
+    remove_mdm_profiles "$systemVolumePath" "$dataVolumePath"
+    disable_mdm_services "$systemVolumePath"
+    verify_bypass
+    
+    echo -e "\n${GREEN}MDM Bypass process completed${NC}"
+    echo -e "${CYAN}Please restart your computer now${NC}"
+    echo -e "${YELLOW}Note: After restart, if you see any MDM prompts, decline them and check System Preferences > Profiles${NC}"
+}
+
+# Main menu
 PS3='Please enter your choice: '
-options=("Autoypass on Recovery" "Check MDM Enrollment" "Reboot" "Exit")
+options=("Run Enhanced MDM Bypass" "Verify MDM Status" "Reboot" "Exit")
 
 select opt in "${options[@]}"; do
-	case $opt in
-	"Autoypass on Recovery")
-		echo -e "\n\t${GREEN}Bypass on Recovery${NC}\n"
-
-		# Mount Volumes
-		echo -e "${BLUE}Mounting volumes...${NC}"
-		# Mount System Volume
-		systemVolumePath=$(defineVolumePath "$DEFAULT_SYSTEM_VOLUME" "System")
-		mountVolume "$systemVolumePath"
-
-		# Mount Data Volume
-		dataVolumePath=$(defineVolumePath "$DEFAULT_DATA_VOLUME" "Data")
-		mountVolume "$dataVolumePath"
-
-		echo -e "${GREEN}Volume preparation completed${NC}\n"
-
-		# Create User
-		echo -e "${BLUE}Checking user existence${NC}"
-		dscl_path="$dataVolumePath/private/var/db/dslocal/nodes/Default"
-		localUserDirPath="/Local/Default/Users"
-		defaultUID="501"
-		if ! dscl -f "$dscl_path" localhost -list "$localUserDirPath" UniqueID | grep -q "\<$defaultUID\>"; then
-			echo -e "${CYAN}Create a new user${NC}"
-			echo -e "${CYAN}Press Enter to continue, Note: Leaving it blank will default to the automatic user${NC}"
-			echo -e "${CYAN}Enter Full Name (Default: Apple)${NC}"
-			read -rp "Full name: " fullName
-			fullName="${fullName:=Apple}"
-
-			echo -e "${CYAN}Username${NC} ${RED}WRITE WITHOUT SPACES${NC} ${GREEN}(default: Apple)${NC}"
-			read -rp "Username: " username
-			username="${username:=Apple}"
-
-			echo -e "${CYAN}Enter the User Password (default: 1234)${NC}"
-			read -rsp "Password: " userPassword
-			userPassword="${userPassword:=1234}"
-
-			echo -e "\n${BLUE}Creating User${NC}"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username" UserShell "/bin/zsh"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username" RealName "$fullName"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username" UniqueID "$defaultUID"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username" PrimaryGroupID "20"
-			mkdir "$dataVolumePath/Users/$username"
-			dscl -f "$dscl_path" localhost -create "$localUserDirPath/$username" NFSHomeDirectory "/Users/$username"
-			dscl -f "$dscl_path" localhost -passwd "$localUserDirPath/$username" "$userPassword"
-			dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$username"
-			echo -e "${GREEN}User created${NC}\n"
-		else
-			echo -e "${BLUE}User already created${NC}\n"
-		fi
-
-		# Block MDM hosts
-		echo -e "${BLUE}Blocking MDM hosts...${NC}"
-		hostsPath="$systemVolumePath/etc/hosts"
-		blockedDomains=("deviceenrollment.apple.com" "mdmenrollment.apple.com" "iprofiles.apple.com")
-		for domain in "${blockedDomains[@]}"; do
-			echo "0.0.0.0 $domain" >>"$hostsPath"
-		done
-		echo -e "${GREEN}Successfully blocked host${NC}\n"
-
-		# Remove config profiles
-		echo -e "${BLUE}Remove config profiles${NC}"
-		configProfilesSettingsPath="$systemVolumePath/var/db/ConfigurationProfiles/Settings"
-		touch "$dataVolumePath/private/var/db/.AppleSetupDone"
-		rm -rf "$configProfilesSettingsPath/.cloudConfigHasActivationRecord"
-		rm -rf "$configProfilesSettingsPath/.cloudConfigRecordFound"
-		touch "$configProfilesSettingsPath/.cloudConfigProfileInstalled"
-		touch "$configProfilesSettingsPath/.cloudConfigRecordNotFound"
-		echo -e "${GREEN}Config profiles removed${NC}\n"
-
-		echo -e "${GREEN}------ Autobypass SUCCESSFULLY ------${NC}"
-		echo -e "${CYAN}------ Exit Terminal. Reboot Macbook and ENJOY ! ------${NC}"
-		break
-		;;
-
-	"Check MDM Enrollment")
-		if [ ! -f /usr/bin/profiles ]; then
-			echo -e "\n\t${RED}Don't use this option in recovery${NC}\n"
-			continue
-		fi
-
-		if ! sudo profiles show -type enrollment >/dev/null 2>&1; then
-			echo -e "\n\t${GREEN}Not Enrolled${NC}\n"
-		else
-			echo -e "\n\t${RED}Enrolled${NC}\n"
-		fi
-		;;
-
-	"Reboot")
-		echo -e "\n\t${BLUE}Rebooting...${NC}\n"
-		reboot
-		;;
-
-	"Exit")
-		echo -e "\n\t${BLUE}Exiting...${NC}\n"
-		exit
-		;;
-
-	*)
-		echo "Invalid option $REPLY"
-		;;
-	esac
+    case $opt in
+        "Run Enhanced MDM Bypass")
+            perform_bypass
+            break
+            ;;
+        "Verify MDM Status")
+            if [ ! -f /usr/bin/profiles ]; then
+                echo -e "\n${RED}Cannot verify MDM status in recovery mode${NC}\n"
+            else
+                verify_bypass
+            fi
+            ;;
+        "Reboot")
+            echo -e "\n${BLUE}Rebooting...${NC}\n"
+            reboot
+            ;;
+        "Exit")
+            echo -e "\n${BLUE}Exiting...${NC}\n"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Invalid option $REPLY${NC}"
+            ;;
+    esac
 done
