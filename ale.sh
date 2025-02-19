@@ -9,192 +9,118 @@ RED='\033[1;31m'
 GREEN='\033[1;32m'
 BLUE='\033[1;34m'
 YELLOW='\033[1;33m'
-PURPLE='\033[1;35m'
 CYAN='\033[1;36m'
 NC='\033[0m'
 
-# Error handling function
-handle_error() {
-    echo -e "${RED}Error: $1${NC}" >&2
-    exit 1
-}
+# Mount Volumes
+echo -e "${BLUE}Mounting volumes...${NC}"
+diskutil mount "Macintosh HD" || true
+diskutil mount "Macintosh HD - Data" || true
 
-# Verify we're running in recovery mode
-check_recovery_mode() {
-    if [ ! -d "/Volumes/Macintosh HD" ] && [ ! -d "/Volumes/Data" ]; then
-        echo -e "${YELLOW}Warning: Make sure you're running this in Recovery Mode${NC}"
-        read -p "Continue anyway? (y/N) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    fi
-}
+# Define paths
+SYSTEM_PATH="/Volumes/Macintosh HD"
+DATA_PATH="/Volumes/Macintosh HD - Data"
 
-# Enhanced MDM domain blocking
-block_mdm_domains() {
-    local hostsPath="$1"
-    local domains=(
-        "deviceenrollment.apple.com"
-        "mdmenrollment.apple.com"
-        "iprofiles.apple.com"
-        "albert.apple.com"
-        "gateway.push.apple.com"
-        "metrics.apple.com"
-        "profile.ess.apple.com"
-        "profiles.apple.com"
-        "setup.icloud.com"
-        "sq-device.apple.com"
-        "serverstatus.apple.com"
-        "axm-adm-enroll.apple.com"
-        "over-the-air.ess.apple.com"
-        "push.apple.com"
-        "comm.support.apple.com"
-    )
-    
-    echo -e "${BLUE}Blocking MDM domains...${NC}"
-    for domain in "${domains[@]}"; do
-        echo "0.0.0.0 $domain" >> "$hostsPath" || handle_error "Failed to block $domain"
-    done
-    echo -e "${GREEN}Successfully blocked all MDM domains${NC}"
-}
+echo -e "${BLUE}Creating local admin user...${NC}"
+# User creation variables
+ADMIN_USER="admin"  # You can change this
+ADMIN_PASS="1234"   # You can change this
+ADMIN_FULL="Admin"  # You can change this
 
-# Enhanced MDM profile removal
-remove_mdm_profiles() {
-    local systemVolumePath="$1"
-    local dataVolumePath="$2"
-    
-    echo -e "${BLUE}Removing MDM profiles and related files...${NC}"
-    
-    # Configuration Profiles
-    local configProfilesPath="$systemVolumePath/var/db/ConfigurationProfiles"
-    rm -rf "$configProfilesPath/Settings/.cloudConfigHasActivationRecord"
-    rm -rf "$configProfilesPath/Settings/.cloudConfigRecordFound"
-    rm -rf "$configProfilesPath/Store"
-    touch "$configProfilesPath/Settings/.cloudConfigProfileInstalled"
-    touch "$configProfilesPath/Settings/.cloudConfigRecordNotFound"
-    
-    # MDM Client
-    rm -rf "$systemVolumePath/Library/LaunchDaemons/com.apple.mdmclient.daemon.plist"
-    rm -rf "$systemVolumePath/Library/LaunchAgents/com.apple.mdmclient.agent.plist"
-    
-    # JAMF and other MDM solutions
-    rm -rf "$systemVolumePath/Library/Application Support/JAMF"
-    rm -rf "$systemVolumePath/Library/LaunchDaemons/com.jamf"
-    rm -rf "$systemVolumePath/usr/local/jamf"
-    rm -rf "$systemVolumePath/var/db/ConfigurationProfiles"
-    
-    # Additional MDM-related files
-    rm -rf "$dataVolumePath/private/var/db/ConfigurationProfiles"
-    touch "$dataVolumePath/private/var/db/.AppleSetupDone"
-    
-    echo -e "${GREEN}MDM profiles and related files removed${NC}"
-}
+# Create user and user folder
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER" UserShell "/bin/zsh"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER" RealName "$ADMIN_FULL"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER" UniqueID "501"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER" PrimaryGroupID "20"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -create "/Local/Default/Users/$ADMIN_USER" NFSHomeDirectory "/Users/$ADMIN_USER"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -passwd "/Local/Default/Users/$ADMIN_USER" "$ADMIN_PASS"
+dscl -f "$DATA_PATH/private/var/db/dslocal/nodes/Default" localhost -append "/Local/Default/Groups/admin" GroupMembership "$ADMIN_USER"
+
+# Create user's home folder
+mkdir -p "$DATA_PATH/Users/$ADMIN_USER"
+cp -R "$DATA_PATH/Users/Shared"/* "$DATA_PATH/Users/$ADMIN_USER/" 2>/dev/null || true
+
+echo -e "${BLUE}Setting up system files...${NC}"
+# Mark system as set up
+touch "$DATA_PATH/private/var/db/.AppleSetupDone"
+touch "$SYSTEM_PATH/var/db/.AppleSetupDone"
+
+# Create needed folders
+mkdir -p "$DATA_PATH/private/var/db/ConfigurationProfiles/Settings"
+
+# Block MDM hosts
+echo -e "${BLUE}Blocking MDM hosts...${NC}"
+cat >> "$SYSTEM_PATH/etc/hosts" << EOL
+0.0.0.0 deviceenrollment.apple.com
+0.0.0.0 mdmenrollment.apple.com
+0.0.0.0 iprofiles.apple.com
+0.0.0.0 albert.apple.com
+0.0.0.0 gateway.push.apple.com
+0.0.0.0 push.apple.com
+0.0.0.0 profile.ess.apple.com
+0.0.0.0 setup.icloud.com
+0.0.0.0 comm.support.apple.com
+0.0.0.0 metrics.apple.com
+0.0.0.0 sq-device.apple.com
+0.0.0.0 serverstatus.apple.com
+0.0.0.0 axm-adm-enroll.apple.com
+0.0.0.0 profiles.apple.com
+0.0.0.0 identity.apple.com
+0.0.0.0 iprofiles.apple.com
+EOL
+
+echo -e "${BLUE}Removing MDM profiles and files...${NC}"
+# Remove MDM profiles and related files
+rm -rf "$SYSTEM_PATH/var/db/ConfigurationProfiles"
+rm -rf "$DATA_PATH/private/var/db/ConfigurationProfiles"
+rm -rf "$SYSTEM_PATH/Library/LaunchDaemons/com.apple.mdmclient.daemon.plist"
+rm -rf "$SYSTEM_PATH/Library/LaunchAgents/com.apple.mdmclient.agent.plist"
+rm -rf "$SYSTEM_PATH/Library/Application Support/JAMF"
+rm -rf "$SYSTEM_PATH/usr/local/jamf"
+rm -rf "$SYSTEM_PATH/var/root/Library/Application Support/com.apple.TCC"
+rm -rf "$SYSTEM_PATH/var/db/ConfigurationProfiles"
 
 # Disable MDM services
-disable_mdm_services() {
-    local systemVolumePath="$1"
-    echo -e "${BLUE}Disabling MDM services...${NC}"
-    
-    # Create script to disable services on next boot
-    cat > "$systemVolumePath/Library/LaunchDaemons/disable.mdm.plist" << EOF
+echo -e "${BLUE}Disabling MDM services...${NC}"
+touch "$SYSTEM_PATH/var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled"
+touch "$SYSTEM_PATH/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound"
+rm -rf "$SYSTEM_PATH/var/db/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord"
+rm -rf "$SYSTEM_PATH/var/db/ConfigurationProfiles/Settings/.cloudConfigRecordFound"
+
+# Set proper permissions
+chmod -R 755 "$DATA_PATH/private/var/db/ConfigurationProfiles/Settings"
+chown -R root:wheel "$DATA_PATH/private/var/db/ConfigurationProfiles/Settings"
+
+# Create autorun script to disable MDM services after boot
+cat > "$SYSTEM_PATH/Library/LaunchDaemons/com.disable.mdm.plist" << EOL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>disable.mdm</string>
+    <string>com.disable.mdm</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>launchctl unload /Library/LaunchDaemons/com.apple.mdmclient.daemon.plist; launchctl unload /Library/LaunchAgents/com.apple.mdmclient.agent.plist</string>
+        <string>launchctl unload /Library/LaunchDaemons/com.apple.mdmclient.daemon.plist 2>/dev/null; launchctl unload /Library/LaunchAgents/com.apple.mdmclient.agent.plist 2>/dev/null</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
 </dict>
 </plist>
-EOF
-    
-    chmod 644 "$systemVolumePath/Library/LaunchDaemons/disable.mdm.plist"
-    echo -e "${GREEN}MDM services disabled${NC}"
-}
+EOL
 
-# Verify bypass success
-verify_bypass() {
-    echo -e "${BLUE}Verifying MDM bypass...${NC}"
-    local success=true
-    
-    # Check for common MDM files
-    for file in "/Library/LaunchDaemons/com.apple.mdmclient.daemon.plist" \
-                "/Library/LaunchAgents/com.apple.mdmclient.agent.plist" \
-                "/var/db/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord"; do
-        if [ -f "$file" ]; then
-            echo -e "${RED}Warning: MDM file still exists: $file${NC}"
-            success=false
-        fi
-    done
-    
-    if [ "$success" = true ]; then
-        echo -e "${GREEN}Verification complete: MDM appears to be successfully bypassed${NC}"
-    else
-        echo -e "${YELLOW}Verification complete: Some MDM files still exist${NC}"
-    fi
-}
+chmod 644 "$SYSTEM_PATH/Library/LaunchDaemons/com.disable.mdm.plist"
+chown root:wheel "$SYSTEM_PATH/Library/LaunchDaemons/com.disable.mdm.plist"
 
-# Main bypass function
-perform_bypass() {
-    echo -e "\n${GREEN}Starting Enhanced MDM Bypass...${NC}\n"
-    
-    # Check if we're in recovery mode
-    check_recovery_mode
-    
-    # Mount volumes
-    echo -e "${BLUE}Mounting volumes...${NC}"
-    systemVolumePath=$(defineVolumePath "$DEFAULT_SYSTEM_VOLUME" "System")
-    mountVolume "$systemVolumePath"
-    dataVolumePath=$(defineVolumePath "$DEFAULT_DATA_VOLUME" "Data")
-    mountVolume "$dataVolumePath"
-    echo -e "${GREEN}Volumes mounted successfully${NC}\n"
-    
-    # Perform bypass steps
-    block_mdm_domains "$systemVolumePath/etc/hosts"
-    remove_mdm_profiles "$systemVolumePath" "$dataVolumePath"
-    disable_mdm_services "$systemVolumePath"
-    verify_bypass
-    
-    echo -e "\n${GREEN}MDM Bypass process completed${NC}"
-    echo -e "${CYAN}Please restart your computer now${NC}"
-    echo -e "${YELLOW}Note: After restart, if you see any MDM prompts, decline them and check System Preferences > Profiles${NC}"
-}
-
-# Main menu
-PS3='Please enter your choice: '
-options=("Run Enhanced MDM Bypass" "Verify MDM Status" "Reboot" "Exit")
-
-select opt in "${options[@]}"; do
-    case $opt in
-        "Run Enhanced MDM Bypass")
-            perform_bypass
-            break
-            ;;
-        "Verify MDM Status")
-            if [ ! -f /usr/bin/profiles ]; then
-                echo -e "\n${RED}Cannot verify MDM status in recovery mode${NC}\n"
-            else
-                verify_bypass
-            fi
-            ;;
-        "Reboot")
-            echo -e "\n${BLUE}Rebooting...${NC}\n"
-            reboot
-            ;;
-        "Exit")
-            echo -e "\n${BLUE}Exiting...${NC}\n"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Invalid option $REPLY${NC}"
-            ;;
-    esac
-done
+echo -e "${GREEN}¡Bypass completado!${NC}"
+echo -e "${CYAN}Usuario creado:${NC}"
+echo -e "  Username: ${GREEN}$ADMIN_USER${NC}"
+echo -e "  Password: ${GREEN}$ADMIN_PASS${NC}"
+echo -e "\n${YELLOW}Por favor, reinicia el equipo.${NC}"
+echo -e "${YELLOW}Después de reiniciar:${NC}"
+echo -e "1. Inicia sesión con el usuario creado"
+echo -e "2. Si aparece algún prompt de MDM, recházalo"
+echo -e "3. Ve a Preferencias del Sistema > Perfiles y verifica que no haya perfiles"
